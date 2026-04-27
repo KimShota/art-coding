@@ -11,6 +11,11 @@ import mediapipe as mp
 import numpy as np
 import sys, os, time, urllib.request
 
+# BGR — classic “computer vision” neon green overlay
+SKELETON_BGR = (0, 255, 0)
+SKELETON_LINE_THICKNESS = 2
+SKELETON_POINT_RADIUS = 4
+
 MODEL_PATH = os.path.expanduser("~/pose_landmarker_full.task")
 MODEL_URL  = ("https://storage.googleapis.com/mediapipe-models/"
               "pose_landmarker/pose_landmarker_full/float16/latest/"
@@ -23,6 +28,17 @@ if not os.path.exists(MODEL_PATH):
 
 from mediapipe.tasks import python as mp_python
 from mediapipe.tasks.python import vision as mp_vision
+from mediapipe.tasks.python.vision import pose_landmarker as mp_pose
+
+POSE_CONNECTIONS = tuple(
+    (c.start, c.end) for c in mp_pose.PoseLandmarksConnections.POSE_LANDMARKS
+)
+# Indices 0-10 are face; omit those edges and dots from the green overlay
+FACE_POSE_INDICES = frozenset(range(11))
+SKELETON_CONNECTIONS = tuple(
+    (a, b) for a, b in POSE_CONNECTIONS
+    if not (a in FACE_POSE_INDICES and b in FACE_POSE_INDICES)
+)
 
 options = mp_vision.PoseLandmarkerOptions(
     base_options=mp_python.BaseOptions(model_asset_path=MODEL_PATH),
@@ -37,10 +53,12 @@ landmarker = mp_vision.PoseLandmarker.create_from_options(options)
 L_SHOULDER, L_ELBOW, L_WRIST = 11, 13, 15
 R_SHOULDER, R_ELBOW, R_WRIST = 12, 14, 16
 
-SENSITIVITY  = 0.18
-MAX_STRETCH  = 20.0   # allow huge stretch
+SENSITIVITY  = 0.15
+MAX_STRETCH  = 30.0   # allow huge stretch
 # How much padding to add around the frame so arms can go off-screen
 PAD          = 800    # pixels of padding on each side
+# Per-frame blend toward measured stretch (1.0 = instant, ~0.08 = very slow)
+STRETCH_RESPONSIVENESS = 0.14
 
 
 def get_pt(lm, idx, w, h):
@@ -49,6 +67,37 @@ def get_pt(lm, idx, w, h):
     if vis is not None and vis < 0.2:
         return None
     return np.array([p.x * w, p.y * h], dtype=np.float32)
+
+
+def draw_pose_skeleton_bgr(frame, lm, w, h):
+    """Body / limbs green wireframe; face landmarks omitted."""
+    for i, j in SKELETON_CONNECTIONS:
+        pa = get_pt(lm, i, w, h)
+        pb = get_pt(lm, j, w, h)
+        if pa is None or pb is None:
+            continue
+        cv2.line(
+            frame,
+            (int(pa[0]), int(pa[1])),
+            (int(pb[0]), int(pb[1])),
+            SKELETON_BGR,
+            SKELETON_LINE_THICKNESS,
+            cv2.LINE_AA,
+        )
+    for idx in range(33):
+        if idx in FACE_POSE_INDICES:
+            continue
+        pt = get_pt(lm, idx, w, h)
+        if pt is None:
+            continue
+        cv2.circle(
+            frame,
+            (int(pt[0]), int(pt[1])),
+            SKELETON_POINT_RADIUS,
+            SKELETON_BGR,
+            -1,
+            cv2.LINE_AA,
+        )
 
 
 def stretch_factor(shoulder, elbow, wrist, sensitivity):
@@ -160,9 +209,11 @@ def warp_arm(canvas, shoulder, elbow, wrist, sf, pad):
     return canvas
 
 
-def draw_hud(frame, l_sf, r_sf, sensitivity, debug, pose_detected):
+def draw_hud(
+    frame, l_sf, r_sf, sensitivity, stretch_smooth, show_skeleton, pose_detected
+):
     overlay = frame.copy()
-    cv2.rectangle(overlay, (0, 0), (360, 90), (20, 20, 20), -1)
+    cv2.rectangle(overlay, (0, 0), (420, 108), (20, 20, 20), -1)
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
 
     pd_color = (0, 220, 80) if pose_detected else (0, 80, 220)
@@ -179,8 +230,27 @@ def draw_hud(frame, l_sf, r_sf, sensitivity, debug, pose_detected):
 
     bar(36, "Left arm",  l_sf)
     bar(66, "Right arm", r_sf)
-    cv2.putText(frame, f"Sens:{sensitivity:.2f} [+/-]  Debug[D]  Quit[Q]",
-                (10, 88), cv2.FONT_HERSHEY_SIMPLEX, 0.36, (140,140,140), 1, cv2.LINE_AA)
+    sk = "ON" if show_skeleton else "OFF"
+    cv2.putText(
+        frame,
+        f"Sens:{sensitivity:.2f} [+/-]  Skel[D]={sk}  Quit[Q]",
+        (10, 88),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.34,
+        (140, 140, 140),
+        1,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame,
+        f"Stretch speed:{stretch_smooth:.2f} [, slower  . faster] (1=instant)",
+        (10, 104),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.32,
+        (140, 140, 140),
+        1,
+        cv2.LINE_AA,
+    )
 
 
 def main():
@@ -193,16 +263,22 @@ def main():
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT,  720)
     cap.set(cv2.CAP_PROP_FPS, 30)
 
-    sensitivity = SENSITIVITY
-    debug       = False
-    start_time  = time.time()
+    sensitivity     = SENSITIVITY
+    stretch_smooth  = STRETCH_RESPONSIVENESS
+    show_skeleton   = True
+    start_time      = time.time()
+    l_sf_smooth     = 1.0
+    r_sf_smooth     = 1.0
 
     # Get actual frame size
     ret, test = cap.read()
     fw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     fh = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"Frame size: {fw}x{fh}, padding: {PAD}px each side")
-    print("Controls: Q=quit  +/-=sensitivity  D=debug")
+    print(
+        "Controls: Q=quit  +/-=sensitivity  D=skeleton  "
+        ",/.=stretch speed (lower=slower ramp)"
+    )
 
     # Output window size = original frame (we crop back after warping)
     cv2.namedWindow("Gomu Gomu no... STRETCH!", cv2.WINDOW_NORMAL)
@@ -239,24 +315,28 @@ def main():
             r_elbow    = get_pt(lm, R_ELBOW,    w, h)
             r_wrist    = get_pt(lm, R_WRIST,    w, h)
 
-            l_sf = stretch_factor(l_shoulder, l_elbow, l_wrist, sensitivity)
-            r_sf = stretch_factor(r_shoulder, r_elbow, r_wrist, sensitivity)
+            l_raw = stretch_factor(l_shoulder, l_elbow, l_wrist, sensitivity)
+            r_raw = stretch_factor(r_shoulder, r_elbow, r_wrist, sensitivity)
+            l_sf_smooth += (l_raw - l_sf_smooth) * stretch_smooth
+            r_sf_smooth += (r_raw - r_sf_smooth) * stretch_smooth
+            l_sf, r_sf = l_sf_smooth, r_sf_smooth
 
             canvas = warp_arm(canvas, l_shoulder, l_elbow, l_wrist, l_sf, PAD)
             canvas = warp_arm(canvas, r_shoulder, r_elbow, r_wrist, r_sf, PAD)
-
-            if debug:
-                for idx in [L_SHOULDER, L_ELBOW, L_WRIST, R_SHOULDER, R_ELBOW, R_WRIST]:
-                    pt = get_pt(lm, idx, w, h)
-                    if pt is not None:
-                        cx = int(pt[0]) + PAD
-                        cy = int(pt[1]) + PAD
-                        cv2.circle(canvas, (cx, cy), 8, (0, 255, 0), -1)
+        else:
+            l_sf_smooth = r_sf_smooth = 1.0
 
         # Crop back to original frame area for display
         display = canvas[PAD:PAD+h, PAD:PAD+w]
 
-        draw_hud(display, l_sf, r_sf, sensitivity, debug, pose_detected)
+        # Green skeleton on uncropped coordinates (matches reference video look)
+        if pose_detected and show_skeleton:
+            draw_pose_skeleton_bgr(display, results.pose_landmarks[0], w, h)
+
+        draw_hud(
+            display, l_sf, r_sf, sensitivity, stretch_smooth,
+            show_skeleton, pose_detected,
+        )
         cv2.imshow("Gomu Gomu no... STRETCH!", display)
 
         key = cv2.waitKey(1) & 0xFF
@@ -269,7 +349,13 @@ def main():
             sensitivity = max(0.1, round(sensitivity - 0.05, 2))
             print(f"Sensitivity: {sensitivity}")
         elif key == ord('d'):
-            debug = not debug
+            show_skeleton = not show_skeleton
+        elif key == ord(','):
+            stretch_smooth = max(0.04, round(stretch_smooth - 0.02, 2))
+            print(f"Stretch speed: {stretch_smooth} (lower = slower)")
+        elif key == ord('.'):
+            stretch_smooth = min(1.0, round(stretch_smooth + 0.02, 2))
+            print(f"Stretch speed: {stretch_smooth} (1.0 = instant)")
 
     cap.release()
     cv2.destroyAllWindows()
