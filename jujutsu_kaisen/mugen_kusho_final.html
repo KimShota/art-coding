@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>無量空処 — 五条悟</title>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;900&family=Noto+Serif+JP:wght@300;700;900&display=swap" rel="stylesheet">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { overflow:hidden; background:#000; }
+
+/* ── Video + canvases ── */
+#webcam       { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; transform:scaleX(-1); z-index:1; }
+#fx-canvas    { position:absolute; inset:0; width:100%; height:100%; z-index:2; pointer-events:none; transform:scaleX(-1); }
+#skel-canvas  { position:absolute; inset:0; width:100%; height:100%; z-index:3; pointer-events:none; transform:scaleX(-1); }
+#three-canvas { position:absolute; inset:0; width:100%; height:100%; z-index:5; pointer-events:none; }
+#kanji-canvas { position:absolute; inset:0; width:100%; height:100%; z-index:6; pointer-events:none; }
+#eye-canvas   { position:absolute; inset:0; width:100%; height:100%; z-index:8; pointer-events:none; }
+
+/* ── UI chrome ── */
+#top-line {
+  position:absolute; top:0; left:0; right:0; height:1px; z-index:10; pointer-events:none;
+  background:linear-gradient(90deg,transparent,rgba(0,210,255,0.6) 30%,rgba(0,210,255,0.6) 70%,transparent);
+  opacity:0; transition:opacity 0.6s;
+}
+#badge {
+  position:absolute; top:0; left:0; padding:1.5rem 2rem 1rem;
+  pointer-events:none; z-index:10;
+}
+#badge .sup   { font-family:'Cinzel',serif; font-size:0.48rem; letter-spacing:0.4em; color:rgba(255,255,255,0.3); text-transform:uppercase; }
+#badge .main  { font-family:'Noto Serif JP',serif; font-size:clamp(1.8rem,3.8vw,2.6rem); font-weight:900; color:#fff; line-height:1; margin-top:0.2rem; transition:color 0.5s, text-shadow 0.5s; }
+#badge .sub   { font-family:'Cinzel',serif; font-size:0.55rem; letter-spacing:0.45em; color:rgba(255,255,255,0.35); margin-top:0.3rem; text-transform:uppercase; transition:color 0.4s; }
+
+/* Phase label — centre screen */
+#phase-label {
+  position:absolute; top:50%; left:50%; transform:translate(-50%,-50%);
+  font-family:'Noto Serif JP',serif; font-size:clamp(2rem,5vw,4rem); font-weight:900;
+  color:#fff; letter-spacing:0.15em; pointer-events:none; z-index:11;
+  opacity:0; transition:opacity 0.3s;
+  text-shadow:0 0 60px rgba(0,200,255,0.9), 0 0 120px rgba(0,150,255,0.5);
+}
+
+/* Power bar */
+#power-wrap {
+  position:absolute; bottom:30px; left:50%; transform:translateX(-50%);
+  display:flex; flex-direction:column; align-items:center; gap:5px;
+  pointer-events:none; z-index:10;
+}
+#power-label { font-family:'Cinzel',serif; font-size:0.44rem; letter-spacing:0.4em; color:rgba(255,255,255,0.28); }
+#power-bg    { width:220px; height:1px; background:rgba(255,255,255,0.1); }
+#power-fill  { height:100%; width:0%; background:linear-gradient(90deg,#003fff,#00cfff); transition:background 0.3s; }
+
+#status { position:absolute; bottom:20px; left:20px; font-family:'Cinzel',serif; font-size:0.44rem; letter-spacing:0.3em; color:rgba(255,255,255,0.2); z-index:10; text-transform:uppercase; }
+#hint   { position:absolute; bottom:20px; right:20px; font-family:'Cinzel',serif; font-size:0.44rem; letter-spacing:0.1em; color:rgba(255,255,255,0.15); z-index:10; text-align:right; line-height:2; }
+
+/* ── Loading screen ── */
+#loading { position:fixed; inset:0; background:#000; display:flex; flex-direction:column; align-items:center; justify-content:center; z-index:1000; gap:1.5rem; transition:opacity 0.8s; }
+#loading h2 { font-family:'Noto Serif JP',serif; font-size:clamp(2.5rem,7vw,5rem); font-weight:900; letter-spacing:0.3em; background:linear-gradient(135deg,#00cfff,#fff 50%,#9b7eff); -webkit-background-clip:text; -webkit-text-fill-color:transparent; background-clip:text; }
+#loading p  { font-family:'Cinzel',serif; color:rgba(139,204,255,0.7); letter-spacing:0.25em; font-size:0.82rem; }
+#start-btn  { font-family:'Cinzel',serif; padding:0.9rem 3rem; background:transparent; border:1px solid rgba(0,207,255,0.4); color:#00cfff; font-size:0.9rem; letter-spacing:0.35em; cursor:pointer; transition:all 0.3s; display:none; }
+#start-btn:hover { background:rgba(0,207,255,0.08); border-color:#00cfff; color:#fff; }
+.loader    { width:36px; height:36px; border:1px solid rgba(0,207,255,0.15); border-top-color:#00cfff; border-radius:50%; animation:spin 1s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+#load-msg  { font-family:'Cinzel',serif; color:rgba(139,204,255,0.65); font-size:0.75rem; letter-spacing:0.15em; display:none; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+<div id="loading">
+  <h2>無量空処</h2>
+  <p>五条悟 · GOJO SATORU · INFINITE VOID</p>
+  <div class="loader" id="loader"></div>
+  <p id="load-msg"></p>
+  <button id="start-btn" onclick="startApp()">術式展開 →</button>
+</div>
+
+<video id="webcam" autoplay playsinline muted></video>
+<canvas id="fx-canvas"></canvas>
+<canvas id="skel-canvas"></canvas>
+<div id="three-canvas"></div>
+<canvas id="kanji-canvas"></canvas>
+<canvas id="eye-canvas"></canvas>
+
+<div id="top-line"></div>
+<div id="badge">
+  <div class="sup">呪術廻戦 · JUJUTSU KAISEN</div>
+  <div class="main" id="technique-name">無量空処</div>
+  <div class="sub"  id="technique-romaji">MUGEN KUSHO</div>
+</div>
+<div id="phase-label" id="phase-label"></div>
+<div id="power-wrap">
+  <div id="power-label">呪力 · CURSED ENERGY</div>
+  <div id="power-bg"><div id="power-fill"></div></div>
+</div>
+<div id="status">● STANDBY</div>
+<div id="hint">人差し指+中指 揃える<br>→ 無量空処</div>
+
+<script>
+// ══════════════════════════════════════════════════════════
+//  DOM
+// ══════════════════════════════════════════════════════════
+const videoEl    = document.getElementById('webcam');
+const fxCanvas   = document.getElementById('fx-canvas');
+const fxCtx      = fxCanvas.getContext('2d');
+const skelCanvas = document.getElementById('skel-canvas');
+const skelCtx    = skelCanvas.getContext('2d');
+const kanjiCanvas= document.getElementById('kanji-canvas');
+const kanjiCtx   = kanjiCanvas.getContext('2d');
+const eyeCanvas  = document.getElementById('eye-canvas');
+const eyeCtx     = eyeCanvas.getContext('2d');
+const statusEl   = document.getElementById('status');
+const nameEl     = document.getElementById('technique-name');
+const romajiEl   = document.getElementById('technique-romaji');
+const topLine    = document.getElementById('top-line');
+const powerFill  = document.getElementById('power-fill');
+const phaseLabel = document.getElementById('phase-label');
+
+// ══════════════════════════════════════════════════════════
+//  THREE.JS
+// ══════════════════════════════════════════════════════════
+let scene, cam3, renderer, particles, domainGroup;
+const COUNT = 30000;
+const targetPos = new Float32Array(COUNT*3);
+const targetCol = new Float32Array(COUNT*3);
+const velocities= new Float32Array(COUNT*3);
+const gojoPhis  = new Float32Array(COUNT);
+const gojoThetas= new Float32Array(COUNT);
+for(let i=0;i<COUNT;i++){
+  gojoPhis[i]  = Math.acos(2*Math.random()-1);
+  gojoThetas[i]= Math.random()*Math.PI*2;
+}
+
+// ══════════════════════════════════════════════════════════
+//  STATE
+// ══════════════════════════════════════════════════════════
+let handPos     = {x:0, y:0};
+let currentTech = 'neutral';
+let time        = 0;
+let gojoProgress= 0;
+
+// ── 3-phase state ──
+// phase 0 = inactive
+// phase 1 = SWIRL (particles orbit wildly, 0→1.5s)
+// phase 2 = COMPRESS (rush inward, 1.5→3s)
+// phase 3 = STABLE (sphere locked, eye glow, kanji rain)
+let gojoPhase   = 0;
+let phaseTimer  = 0;
+const PHASE_DUR = [0, Infinity, 80, Infinity]; // frames per phase
+
+// ── Kanji rain ──
+let kanjiDrops  = [];
+const KANJI_CHARS = '無量空処術式展開呪力五条悟六眼無限蒼赫虚式茈';
+
+// ── FX ──
+let faceLM      = null;
+let eyeGlowAlpha= 0;
+let inkSplats   = [];
+function genInkSplats(){
+  inkSplats=[];
+  for(let i=0;i<22;i++){
+    const a=Math.random()*Math.PI*2, d=0.1+Math.random()*0.45, s=0.025+Math.random()*0.1;
+    const pts=[]; const n=8+Math.floor(Math.random()*8);
+    for(let p=0;p<n;p++) pts.push({a:(p/n)*Math.PI*2, r:s*(0.5+Math.random()*0.8)});
+    inkSplats.push({angle:a, dist:d, size:s, points:pts, op:0.5+Math.random()*0.5});
+  }
+}
+genInkSplats();
+
+const FACE_OVAL=[10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109,10];
+
+// ══════════════════════════════════════════════════════════
+//  INIT THREE
+// ══════════════════════════════════════════════════════════
+function initThree(){
+  scene = new THREE.Scene();
+  cam3  = new THREE.PerspectiveCamera(75, innerWidth/innerHeight, 0.1, 1000);
+  cam3.position.z = 100;
+  renderer = new THREE.WebGLRenderer({antialias:true, alpha:true});
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  document.getElementById('three-canvas').appendChild(renderer.domElement);
+
+  // ── 蒼 (AOI) — Gojo's blue attraction sphere ──────────────
+  domainGroup = new THREE.Group();
+
+  // Void core — deep black centre
+  domainGroup.add(new THREE.Mesh(
+    new THREE.SphereGeometry(6, 64, 64),
+    new THREE.MeshBasicMaterial({ color:0x000005, transparent:true, opacity:0.98 })
+  ));
+
+  // Inner dark glow layer
+  domainGroup.add(new THREE.Mesh(
+    new THREE.SphereGeometry(9, 48, 48),
+    new THREE.MeshBasicMaterial({ color:0x000820, transparent:true, opacity:0.7 })
+  ));
+
+  // Mid shell — very dark blue
+  domainGroup.add(new THREE.Mesh(
+    new THREE.SphereGeometry(12, 48, 48),
+    new THREE.MeshBasicMaterial({ color:0x001540, transparent:true, opacity:0.45 })
+  ));
+
+  // Outer corona — bright electric blue edge (thin wireframe)
+  domainGroup.add(new THREE.Mesh(
+    new THREE.SphereGeometry(14.5, 64, 64),
+    new THREE.MeshBasicMaterial({ color:0x0055cc, wireframe:true, transparent:true, opacity:0.22 })
+  ));
+
+  // Gravitational distortion rings — tilted at different angles
+  const ringConfigs = [
+    { rx:0,           ry:0,           rz:0,    col:0x0088ff, tube:0.12, r:16, sp: 0.018 },
+    { rx:Math.PI/3,   ry:0,           rz:0,    col:0x00aaff, tube:0.10, r:15, sp:-0.022 },
+    { rx:Math.PI*0.6, ry:Math.PI/4,   rz:0,    col:0x0066dd, tube:0.08, r:17, sp: 0.014 },
+    { rx:Math.PI/2,   ry:Math.PI*0.3, rz:0,    col:0x00ccff, tube:0.14, r:13, sp:-0.030 },
+    { rx:Math.PI*0.8, ry:0,           rz:Math.PI/5, col:0x003faa, tube:0.09, r:18.5, sp:0.010 },
+  ];
+  ringConfigs.forEach(rc=>{
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(rc.r, rc.tube, 8, 120),
+      new THREE.MeshBasicMaterial({ color:rc.col, transparent:true, opacity:0.75 })
+    );
+    ring.rotation.x = rc.rx; ring.rotation.y = rc.ry; ring.rotation.z = rc.rz;
+    ring.userData.spinY = rc.sp;
+    domainGroup.add(ring);
+  });
+
+  // Bright equatorial ring — the "event horizon" edge
+  const eqRing = new THREE.Mesh(
+    new THREE.TorusGeometry(14.8, 0.25, 8, 120),
+    new THREE.MeshBasicMaterial({ color:0x44ddff, transparent:true, opacity:0.9 })
+  );
+  eqRing.userData.spinY = 0.035;
+  domainGroup.add(eqRing);
+
+  // Six Eyes hexagram — faintly visible in the void core
+  const hexCore = new THREE.Group();
+  hexCore.userData.spinZ = 0.012;
+  for(let i=0;i<6;i++){
+    const bar = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.08, 10, 4),
+      new THREE.MeshBasicMaterial({ color:0x0044bb, transparent:true, opacity:0.5 })
+    );
+    bar.rotation.z=(i/6)*Math.PI*2; bar.rotation.x=Math.PI/2; hexCore.add(bar);
+  }
+  // Tiny bright singularity at the very centre
+  hexCore.add(new THREE.Mesh(
+    new THREE.SphereGeometry(0.8, 16, 16),
+    new THREE.MeshBasicMaterial({ color:0xaaddff, transparent:true, opacity:0.95 })
+  ));
+  domainGroup.add(hexCore);
+
+  domainGroup.visible=false; scene.add(domainGroup);
+
+  // Particles
+  const geo=new THREE.BufferGeometry();
+  const pos=new Float32Array(COUNT*3), col=new Float32Array(COUNT*3);
+  for(let i=0;i<COUNT;i++){
+    pos[i*3]=(Math.random()-.5)*300; pos[i*3+1]=(Math.random()-.5)*300; pos[i*3+2]=(Math.random()-.5)*300;
+    col[i*3]=0.85; col[i*3+1]=0.75; col[i*3+2]=0.2;
+    velocities[i*3]=(Math.random()-.5)*2; velocities[i*3+1]=(Math.random()-.5)*2; velocities[i*3+2]=(Math.random()-.5)*2;
+  }
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('color',   new THREE.BufferAttribute(col,3));
+  particles=new THREE.Points(geo,new THREE.PointsMaterial({size:0.9,vertexColors:true,blending:THREE.AdditiveBlending,transparent:true,depthWrite:false}));
+  scene.add(particles);
+  setNeutralTargets();
+  renderLoop();
+}
+
+// Per-particle flash state for neutral mode
+const flashPhase  = new Float32Array(COUNT); // random offset for flash timing
+const flashSpeed  = new Float32Array(COUNT); // how fast each particle flashes
+for(let i=0;i<COUNT;i++){
+  flashPhase[i] = Math.random()*Math.PI*2;
+  flashSpeed[i] = 0.008 + Math.random()*0.025;
+}
+
+function setNeutralTargets(){
+  for(let i=0;i<COUNT;i++){
+    const idx=i*3;
+    // Scatter randomly in 3D space — gravity will pull them inward
+    targetPos[idx]  = (Math.random()-.5)*280;
+    targetPos[idx+1]= (Math.random()-.5)*280;
+    targetPos[idx+2]= (Math.random()-.5)*280;
+    targetCol[idx]=0.02; targetCol[idx+1]=0.03; targetCol[idx+2]=0.05;
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  RENDER LOOP
+// ══════════════════════════════════════════════════════════
+function renderLoop(){
+  requestAnimationFrame(renderLoop);
+  time += 0.05;
+
+  const pct = gojoPhase>=2 ? gojoProgress*100 : 0;
+  powerFill.style.width = pct+'%';
+  if(pct>80) powerFill.style.background='linear-gradient(90deg,#00ffaa,#fff)';
+  else       powerFill.style.background='linear-gradient(90deg,#003fff,#00cfff)';
+
+  if(currentTech==='gojo'){
+    gojoProgress=Math.min(gojoProgress+0.007,1);
+    phaseTimer++;
+    // Phase transitions
+    if(gojoPhase===2 && phaseTimer>=PHASE_DUR[2]){ gojoPhase=3; phaseTimer=0; showPhaseLabel('無量空処'); startKanjiRain(); }
+  } else {
+    gojoProgress=Math.max(gojoProgress-0.04,0);
+    if(gojoPhase>0){ gojoPhase=0; phaseTimer=0; stopKanjiRain(); }
+  }
+
+  // Domain sphere
+  if(domainGroup.visible){
+    domainGroup.position.set(handPos.x,handPos.y,0);
+    domainGroup.rotation.y+=0.006;
+    domainGroup.rotation.x+=0.003;
+    const sc=0.82+gojoProgress*0.18+Math.sin(time*3.5)*0.012*gojoProgress;
+    domainGroup.scale.setScalar(sc);
+    domainGroup.children.forEach(c=>{
+      if(c.userData.spinZ) c.rotation.z+=c.userData.spinZ;
+      if(c.userData.spinY) c.rotation.y+=c.userData.spinY;
+      if(c.userData.spinZ && c.children) c.rotation.z+=c.userData.spinZ; // hex group
+    });
+  }
+
+  updateParticles();
+  renderer.render(scene,cam3);
+
+  // Eye glow
+  const gojoOn=(currentTech==='gojo'&&gojoPhase>=3);
+  eyeGlowAlpha+=(( gojoOn?1:0)-eyeGlowAlpha)*0.07;
+  drawFxLayer(currentTech==='gojo'||eyeGlowAlpha>0.02, gojoProgress, gojoPhase);
+  drawEyeGlow(eyeGlowAlpha);
+  drawKanjiRain();
+}
+
+// ══════════════════════════════════════════════════════════
+//  PARTICLE UPDATE
+// ══════════════════════════════════════════════════════════
+function updateParticles(){
+  const posArr=particles.geometry.attributes.position.array;
+  const colArr=particles.geometry.attributes.color.array;
+  const SR=15;
+
+  for(let i=0;i<COUNT;i++){
+    const ix=i*3,iy=ix+1,iz=ix+2;
+
+    if(currentTech==='gojo'){
+      const spinY=time*0.4;
+      const ph=gojoPhis[i], th=gojoThetas[i]+spinY;
+      const sx=SR*Math.sin(ph)*Math.cos(th), sy=SR*Math.cos(ph), sz=SR*Math.sin(ph)*Math.sin(th);
+      const tx=handPos.x+sx, ty=handPos.y+sy, tz=sz;
+
+      let lp, rx=tx, ry=ty, rz=tz;
+      if(gojoPhase===1){
+        // SWIRL: orbit at large chaotic radius, slowly contracting
+        const chaos=2.2; // constant swirl intensity
+        const swirlAngle=(i/COUNT)*Math.PI*2+time*2;
+        const swirlR=SR*chaos+Math.sin(time*3+i)*8;
+        rx=handPos.x+Math.cos(swirlAngle)*swirlR+Math.sin(time+i*0.1)*15;
+        ry=handPos.y+Math.sin(swirlAngle)*swirlR*0.6+Math.cos(time*1.3+i*0.08)*10;
+        rz=Math.cos(swirlAngle+time)*swirlR*0.5;
+        lp=0.09;
+      } else if(gojoPhase===2){
+        // COMPRESS: fast rush inward
+        lp=0.12+phaseTimer/PHASE_DUR[2]*0.15;
+      } else {
+        // STABLE: continuous swirl — target moves fast, lerp is slow → particles trail behind
+        // Each particle has a unique orbit speed and radius offset
+        const orbitSpeed = 1.4 + (i % 7) * 0.15;  // varied speeds per particle
+        const swirlAngle = (i/COUNT)*Math.PI*2 + time*orbitSpeed;
+        const swirlLat   = gojoPhis[i] + Math.sin(time*0.8 + i*0.03)*0.3; // wobbling latitude
+        const orbitR     = SR * (0.95 + Math.sin(time*1.5 + i*0.07)*0.22); // pulsing radius
+
+        rx = handPos.x + orbitR*Math.sin(swirlLat)*Math.cos(swirlAngle);
+        ry = handPos.y + orbitR*Math.cos(swirlLat);
+        rz =             orbitR*Math.sin(swirlLat)*Math.sin(swirlAngle);
+
+        // Very low lerp = particles lag behind = visible swirl trails
+        lp = 0.018;
+      }
+      posArr[ix]+=(rx-posArr[ix])*lp;
+      posArr[iy]+=(ry-posArr[iy])*lp;
+      posArr[iz]+=(rz-posArr[iz])*lp;
+
+      // Color by phase
+      let tr,tg,tb;
+      if(gojoPhase===1){
+        // Bright white-blue swirl — stays constant
+        tr=0.6; tg=0.85; tb=1.0;
+      } else {
+        const zNorm=(sz/SR+1)*0.5;
+        // 蒼: particles near the front/edge glow bright blue, core is dark
+        const edgeFactor = Math.abs(sz/SR); // 1=equator edge, 0=poles
+        tr = zNorm*0.05;
+        tg = 0.15 + zNorm*0.35 + edgeFactor*0.2;
+        tb = 0.6  + zNorm*0.35 + edgeFactor*0.05;
+      }
+      colArr[ix]+=(tr-colArr[ix])*0.07;
+      colArr[iy]+=(tg-colArr[iy])*0.07;
+      colArr[iz]+=(tb-colArr[iz])*0.07;
+
+    } else {
+      // ── GRAVITY WELL ─────────────────────────────────────
+      // Pull every particle toward origin (0,0,0) with inverse-square gravity
+      const px=posArr[ix], py=posArr[iy], pz=posArr[iz];
+      const dist=Math.sqrt(px*px+py*py+pz*pz)+0.001;
+
+      // Gravity strength — stronger when far, weaker when close
+      const G = 0.012;
+      const force = G * (dist / 40);  // gentle pull
+      velocities[ix] += (-px/dist)*force;
+      velocities[iy] += (-py/dist)*force;
+      velocities[iz] += (-pz/dist)*force;
+
+      // Small tangential nudge so they orbit rather than just fall straight in
+      const tx=-py/dist, ty=px/dist; // perpendicular in XY plane
+      const orbitStrength = 0.004;
+      velocities[ix] += tx*orbitStrength;
+      velocities[iy] += ty*orbitStrength;
+
+      // Damping
+      velocities[ix]*=.985; velocities[iy]*=.985; velocities[iz]*=.985;
+
+      posArr[ix]+=velocities[ix];
+      posArr[iy]+=velocities[iy];
+      posArr[iz]+=velocities[iz];
+
+      // If too close to centre, respawn at edge
+      if(dist < 5){
+        posArr[ix]=(Math.random()-.5)*280;
+        posArr[iy]=(Math.random()-.5)*280;
+        posArr[iz]=(Math.random()-.5)*120;
+        velocities[ix]=(Math.random()-.5)*0.5;
+        velocities[iy]=(Math.random()-.5)*0.5;
+        velocities[iz]=(Math.random()-.5)*0.5;
+      }
+
+      // Flash: occasional blue spark
+      flashPhase[i] += flashSpeed[i];
+      const flash = Math.max(0, Math.sin(flashPhase[i]));
+      const isFlashing = flash > 0.85;
+      const intensity  = isFlashing ? Math.pow((flash-0.85)/0.15, 2) : 0;
+
+      // Also slightly brighter when moving fast (speed glow)
+      const speed = Math.sqrt(velocities[ix]**2+velocities[iy]**2+velocities[iz]**2);
+      const speedGlow = Math.min(speed*0.3, 0.15);
+
+      const tr = intensity*0.05;
+      const tg = intensity*0.25 + speedGlow*0.3;
+      const tb = intensity*0.9  + speedGlow;
+      colArr[ix]+=(tr-colArr[ix])*.12;
+      colArr[iy]+=(tg-colArr[iy])*.12;
+      colArr[iz]+=(tb-colArr[iz])*.12;
+    }
+  }
+  particles.geometry.attributes.position.needsUpdate=true;
+  particles.geometry.attributes.color.needsUpdate=true;
+}
+
+// ══════════════════════════════════════════════════════════
+//  PHASE LABEL
+// ══════════════════════════════════════════════════════════
+let phaseLabelTO=null;
+function showPhaseLabel(text){
+  if(!text){ phaseLabel.style.opacity='0'; return; }
+  phaseLabel.textContent=text;
+  phaseLabel.style.opacity='1';
+  clearTimeout(phaseLabelTO);
+  phaseLabelTO=setTimeout(()=>{ phaseLabel.style.opacity='0'; },1800);
+}
+
+// ══════════════════════════════════════════════════════════
+//  KANJI RAIN
+// ══════════════════════════════════════════════════════════
+let kanjiRainActive=false, kanjiInterval=null;
+function startKanjiRain(){
+  kanjiRainActive=true;
+  kanjiDrops=[];
+  for(let i=0;i<60;i++) spawnKanjiDrop(true);
+}
+function stopKanjiRain(){
+  kanjiRainActive=false;
+  kanjiDrops=[];
+  kanjiCtx.clearRect(0,0,kanjiCanvas.width,kanjiCanvas.height);
+}
+function spawnKanjiDrop(randomY=false){
+  const W=kanjiCanvas.width||innerWidth;
+  kanjiDrops.push({
+    x: Math.random()*W,
+    y: randomY ? Math.random()*kanjiCanvas.height : -30,
+    char: KANJI_CHARS[Math.floor(Math.random()*KANJI_CHARS.length)],
+    speed: 1.5+Math.random()*3.5,
+    size: 14+Math.floor(Math.random()*22),
+    alpha: 0.3+Math.random()*0.6,
+    glowing: Math.random()>0.75,
+    life: 1,
+    decay: 0.003+Math.random()*0.004,
+  });
+}
+function drawKanjiRain(){
+  const W=kanjiCanvas.width=innerWidth, H=kanjiCanvas.height=innerHeight;
+  kanjiCtx.clearRect(0,0,W,H);
+  if(!kanjiRainActive&&kanjiDrops.length===0) return;
+  if(kanjiRainActive && Math.random()<0.35) spawnKanjiDrop();
+
+  for(let i=kanjiDrops.length-1;i>=0;i--){
+    const d=kanjiDrops[i];
+    d.y+=d.speed; d.life-=d.decay;
+    if(d.y>H+40||d.life<=0){ kanjiDrops.splice(i,1); continue; }
+    kanjiCtx.save();
+    kanjiCtx.font=`${d.glowing?'900':'300'} ${d.size}px 'Noto Serif JP'`;
+    kanjiCtx.globalAlpha=d.alpha*d.life;
+    if(d.glowing){
+      kanjiCtx.shadowBlur=18; kanjiCtx.shadowColor='rgba(0,200,255,0.9)';
+      kanjiCtx.fillStyle='rgba(180,240,255,1)';
+    } else {
+      kanjiCtx.fillStyle=`rgba(0,${160+Math.floor(Math.random()*80)},255,1)`;
+    }
+    kanjiCtx.fillText(d.char, d.x, d.y);
+    kanjiCtx.restore();
+  }
+}
+
+// ══════════════════════════════════════════════════════════
+//  CURSED ENERGY VEINS (replaces colorful skeleton)
+// ══════════════════════════════════════════════════════════
+const CONNECTIONS=[
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],
+  [13,17],[17,18],[18,19],[19,20],[0,17]
+];
+function drawCursedVeins(lm){
+  const W=skelCanvas.width, H=skelCanvas.height;
+  // Determine overall energy level for glow intensity
+  const energy = currentTech==='gojo' ? Math.min(gojoProgress*1.5+0.3,1) : 0.25;
+  const pulse  = 0.7+Math.sin(time*8)*0.3;
+
+  CONNECTIONS.forEach(([a,b])=>{
+    const ax=(1-lm[a].x)*W, ay=lm[a].y*H;
+    const bx=(1-lm[b].x)*W, by=lm[b].y*H;
+    // Main vein line
+    skelCtx.save();
+    skelCtx.shadowBlur  = 8+energy*16;
+    skelCtx.shadowColor = currentTech==='gojo' ? 'rgba(0,180,255,0.9)' : 'rgba(0,120,200,0.6)';
+    skelCtx.strokeStyle = currentTech==='gojo'
+      ? `rgba(${Math.floor(100+energy*155)},${Math.floor(200+energy*55)},255,${0.6+energy*0.4})`
+      : 'rgba(80,160,255,0.5)';
+    skelCtx.lineWidth   = 1.5+energy*2;
+    skelCtx.lineCap     = 'round';
+    skelCtx.globalAlpha = 0.7+energy*0.3;
+    skelCtx.beginPath(); skelCtx.moveTo(ax,ay); skelCtx.lineTo(bx,by); skelCtx.stroke();
+    // Bright core
+    skelCtx.shadowBlur  = 4;
+    skelCtx.strokeStyle = `rgba(200,240,255,${energy*0.8*pulse})`;
+    skelCtx.lineWidth   = 0.7;
+    skelCtx.beginPath(); skelCtx.moveTo(ax,ay); skelCtx.lineTo(bx,by); skelCtx.stroke();
+    skelCtx.restore();
+  });
+
+  // Joint nodes
+  lm.forEach((pt,id)=>{
+    const px=(1-pt.x)*W, py=pt.y*H;
+    const isTip=[4,8,12,16,20].includes(id);
+    const r = isTip ? 5+energy*4 : 3+energy*2;
+    skelCtx.save();
+    skelCtx.shadowBlur  = isTip?20:10;
+    skelCtx.shadowColor = 'rgba(0,200,255,0.9)';
+    skelCtx.fillStyle   = isTip ? `rgba(200,240,255,${0.8+energy*0.2})` : `rgba(100,200,255,${0.6+energy*0.3})`;
+    skelCtx.globalAlpha = 0.85;
+    skelCtx.beginPath(); skelCtx.arc(px,py,r,0,Math.PI*2); skelCtx.fill();
+    skelCtx.restore();
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+//  GRAYSCALE BG + INK (person stays color)
+// ══════════════════════════════════════════════════════════
+function drawFxLayer(active, progress, phase){
+  const W=fxCanvas.width=innerWidth, H=fxCanvas.height=innerHeight;
+  if(!active){ fxCtx.clearRect(0,0,W,H); return; }
+
+  const off=document.createElement('canvas'); off.width=W; off.height=H;
+  const octx=off.getContext('2d');
+  octx.drawImage(videoEl,0,0,W,H);
+  const id=octx.getImageData(0,0,W,H); const d=id.data;
+  for(let i=0;i<d.length;i+=4){
+    const g=d[i]*0.299+d[i+1]*0.587+d[i+2]*0.114;
+    const hc=g<128?g*0.45:128+(g-128)*1.45;
+    const v=Math.min(255,Math.max(0,hc));
+    d[i]=d[i+1]=d[i+2]=v;
+  }
+  octx.putImageData(id,0,0);
+  fxCtx.clearRect(0,0,W,H);
+  fxCtx.drawImage(off,0,0);
+
+  if(faceLM){
+    const cx=FACE_OVAL.reduce((s,id)=>s+faceLM[id].x,0)/FACE_OVAL.length;
+    const cy=FACE_OVAL.reduce((s,id)=>s+faceLM[id].y,0)/FACE_OVAL.length;
+    const exp=1.65;
+    fxCtx.save();
+    fxCtx.beginPath();
+    FACE_OVAL.forEach((id,i)=>{
+      const lm=faceLM[id];
+      const px=(lm.x+(lm.x-cx)*(exp-1))*W, py=(lm.y+(lm.y-cy)*(exp-1))*H;
+      i===0?fxCtx.moveTo(px,py):fxCtx.lineTo(px,py);
+    });
+    fxCtx.closePath();
+    fxCtx.globalCompositeOperation='destination-out';
+    fxCtx.fillStyle='rgba(0,0,0,1)'; fxCtx.fill();
+    fxCtx.restore();
+
+    fxCtx.save();
+    fxCtx.beginPath();
+    const exp2=1.6;
+    FACE_OVAL.forEach((id,i)=>{
+      const lm=faceLM[id];
+      const px=(lm.x+(lm.x-cx)*(exp2-1))*W, py=(lm.y+(lm.y-cy)*(exp2-1))*H;
+      i===0?fxCtx.moveTo(px,py):fxCtx.lineTo(px,py);
+    });
+    fxCtx.closePath(); fxCtx.clip();
+    fxCtx.drawImage(videoEl,0,0,W,H);
+    fxCtx.restore();
+  }
+
+  // Ink splats
+  const icx=W*0.5, icy=H*0.5, diag=Math.sqrt(W*W+H*H);
+  fxCtx.save();
+  inkSplats.forEach(sp=>{
+    const sx=icx+Math.cos(sp.angle)*sp.dist*diag;
+    const sy=icy+Math.sin(sp.angle)*sp.dist*diag*0.55;
+    const sz=sp.size*diag*Math.min(progress*2,1);
+    fxCtx.beginPath();
+    sp.points.forEach((pt,idx)=>{
+      const px=sx+Math.cos(pt.a)*pt.r*sz, py=sy+Math.sin(pt.a)*pt.r*sz;
+      idx===0?fxCtx.moveTo(px,py):fxCtx.lineTo(px,py);
+    });
+    fxCtx.closePath();
+    fxCtx.fillStyle=sp.op>0.8?`rgba(0,5,25,${sp.op*progress})`:`rgba(0,0,0,${sp.op*progress})`;
+    fxCtx.fill();
+  });
+  fxCtx.restore();
+
+  // Vignette
+  const vg=fxCtx.createRadialGradient(icx,icy,H*0.2,icx,icy,H*0.88);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,`rgba(0,0,0,${0.5*progress})`);
+  fxCtx.fillStyle=vg; fxCtx.fillRect(0,0,W,H);
+}
+
+// ══════════════════════════════════════════════════════════
+//  EYE GLOW — subtle Gojo blue
+// ══════════════════════════════════════════════════════════
+function drawEyeGlow(alpha){
+  const W=eyeCanvas.width=innerWidth, H=eyeCanvas.height=innerHeight;
+  eyeCtx.clearRect(0,0,W,H);
+  if(!faceLM||alpha<0.01) return;
+  [[468,469,470,471,472],[473,474,475,476,477]].forEach(group=>{
+    let ix=0,iy=0;
+    group.forEach(id=>{ix+=faceLM[id].x;iy+=faceLM[id].y;});
+    ix/=group.length; iy/=group.length;
+    const px=(1-ix)*W, py=iy*H;
+    const r0=faceLM[group[1]],r1=faceLM[group[3]];
+    const ir=Math.hypot((r0.x-r1.x)*W,(r0.y-r1.y)*H)*0.75+6;
+
+    const haze=eyeCtx.createRadialGradient(px,py,0,px,py,ir*3.5);
+    haze.addColorStop(0,`rgba(80,200,255,${0.07*alpha})`); haze.addColorStop(1,'rgba(0,150,255,0)');
+    eyeCtx.fillStyle=haze; eyeCtx.beginPath(); eyeCtx.arc(px,py,ir*3.5,0,Math.PI*2); eyeCtx.fill();
+
+    const fill=eyeCtx.createRadialGradient(px,py,0,px,py,ir);
+    fill.addColorStop(0,  `rgba(180,235,255,${0.55*alpha})`);
+    fill.addColorStop(0.45,`rgba(60,180,255,${0.45*alpha})`);
+    fill.addColorStop(0.85,`rgba(0,100,220,${0.35*alpha})`);
+    fill.addColorStop(1,  'rgba(0,60,180,0)');
+    eyeCtx.fillStyle=fill; eyeCtx.beginPath(); eyeCtx.arc(px,py,ir,0,Math.PI*2); eyeCtx.fill();
+
+    eyeCtx.fillStyle=`rgba(255,255,255,${0.65*alpha})`;
+    eyeCtx.beginPath(); eyeCtx.arc(px-ir*0.28,py-ir*0.28,ir*0.14,0,Math.PI*2); eyeCtx.fill();
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+//  GESTURE DETECTION + PATTERN
+// ══════════════════════════════════════════════════════════
+function setPattern(type){
+  if(currentTech===type) return;
+  if(currentTech!=='neutral'&&type==='neutral'){
+    const pa=particles.geometry.attributes.position.array;
+    for(let i=0;i<COUNT;i++){
+      const ix=i*3;
+      velocities[ix]  =(pa[ix]  -handPos.x)*(Math.random()*.5);
+      velocities[ix+1]=(pa[ix+1]-handPos.y)*(Math.random()*.5);
+      velocities[ix+2]= pa[ix+2]            *(Math.random()*.35);
+    }
+    setNeutralTargets();
+  }
+  if(type==='gojo'&&currentTech!=='gojo'){
+    gojoProgress=0; gojoPhase=1; phaseTimer=0;
+    domainGroup.visible=false;
+    showPhaseLabel('術式展開');
+  }
+  if(type==='neutral'){
+    domainGroup.visible=false;
+    topLine.style.opacity='0';
+    nameEl.style.color='#fff'; nameEl.style.textShadow='none';
+    romajiEl.textContent='MUGEN KUSHO'; romajiEl.style.color='rgba(255,255,255,0.35)';
+    statusEl.textContent='● STANDBY';
+  }
+  if(type==='gojo'){
+    topLine.style.opacity='1';
+    nameEl.style.color='#00d4ff';
+    nameEl.style.textShadow='0 0 30px rgba(0,200,255,0.9),0 0 80px rgba(0,150,255,0.5)';
+    romajiEl.textContent='GOJO · INFINITE VOID'; romajiEl.style.color='rgba(0,210,255,0.65)';
+    statusEl.textContent='● SYSTEM ACTIVE';
+  }
+  currentTech=type;
+  // Show domain sphere only in stable phase
+  if(type==='gojo') setTimeout(()=>{ if(currentTech==='gojo'&&gojoPhase>=3) domainGroup.visible=true; },4000);
+}
+
+// Watch phase to show sphere
+setInterval(()=>{ if(currentTech==='gojo'&&gojoPhase>=3) domainGroup.visible=true; },100);
+
+// ══════════════════════════════════════════════════════════
+//  FACE MESH
+// ══════════════════════════════════════════════════════════
+let faceMeshMP;
+function setupFaceMesh(){
+  faceMeshMP=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`});
+  faceMeshMP.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.5,minTrackingConfidence:0.5});
+  faceMeshMP.onResults(res=>{
+    faceLM=(res.multiFaceLandmarks&&res.multiFaceLandmarks.length>0)?res.multiFaceLandmarks[0]:null;
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+//  HANDS
+// ══════════════════════════════════════════════════════════
+let handsMP;
+function setupHands(){
+  handsMP=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`});
+  handsMP.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:0.6,minTrackingConfidence:0.5});
+  handsMP.onResults(res=>{
+    skelCtx.clearRect(0,0,skelCanvas.width,skelCanvas.height);
+    if(res.multiHandLandmarks&&res.multiHandLandmarks.length>0){
+      const h=res.multiHandLandmarks[0];
+      handPos.x=(h[9].x-0.5)*-150;
+      handPos.y=(0.5-h[9].y)*100;
+      drawCursedVeins(h);
+      const dIM=Math.hypot(h[8].x-h[12].x,h[8].y-h[12].y);
+      setPattern(dIM<0.025&&h[12].y<h[10].y?'gojo':'neutral');
+      statusEl.textContent=currentTech==='gojo'?'● SYSTEM ACTIVE':'● STANDBY';
+    } else {
+      setPattern('neutral');
+    }
+  });
+}
+
+// ══════════════════════════════════════════════════════════
+//  BOOTSTRAP
+// ══════════════════════════════════════════════════════════
+async function initCamera(){
+  try{
+    const s=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720},facingMode:'user'}});
+    videoEl.srcObject=s; await new Promise(r=>videoEl.onloadedmetadata=r);
+    document.getElementById('loader').style.display='none';
+    document.getElementById('load-msg').textContent='カメラ準備完了';
+    document.getElementById('load-msg').style.display='block';
+    document.getElementById('start-btn').style.display='block';
+  }catch(e){
+    document.getElementById('loader').style.display='none';
+    document.getElementById('load-msg').textContent='カメラを許可してください';
+    document.getElementById('load-msg').style.color='#f55';
+    document.getElementById('load-msg').style.display='block';
+  }
+}
+
+async function startApp(){
+  document.getElementById('loading').style.opacity='0';
+  setTimeout(()=>document.getElementById('loading').style.display='none',800);
+  setupHands(); setupFaceMesh(); initThree();
+  const c=new Camera(videoEl,{
+    onFrame:async()=>{
+      skelCanvas.width=videoEl.videoWidth; skelCanvas.height=videoEl.videoHeight;
+      await handsMP.send({image:videoEl});
+      await faceMeshMP.send({image:videoEl});
+    },
+    width:1280,height:720
+  });
+  c.start();
+}
+
+window.addEventListener('resize',()=>{
+  if(!cam3)return;
+  cam3.aspect=innerWidth/innerHeight; cam3.updateProjectionMatrix(); renderer.setSize(innerWidth,innerHeight);
+});
+
+initCamera();
+</script>
+</body>
+</html>
