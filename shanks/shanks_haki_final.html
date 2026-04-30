@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>覇王色の覇気</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+#container { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000; overflow: hidden; }
+#video {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+}
+#bgCanvas, #effectCanvas {
+  position: absolute; top: 0; left: 0;
+  width: 100%; height: 100%;
+  pointer-events: none;
+}
+#ui {
+  position: absolute; bottom: 40px; left: 50%;
+  transform: translateX(-50%);
+  display: flex; flex-direction: column; align-items: center; gap: 12px;
+  z-index: 30;
+}
+#statusText {
+  font-family: 'Arial Black', Impact, sans-serif;
+  font-size: 22px; font-weight: 900; color: #ff2200;
+  text-shadow: 0 0 20px #ff0000, 0 0 50px #880000;
+  letter-spacing: 5px; text-align: center; white-space: nowrap;
+}
+#countdown {
+  font-family: 'Arial Black', Impact, sans-serif;
+  font-size: 90px; font-weight: 900; color: #ff4400;
+  text-shadow: 0 0 40px #ff0000, 0 0 80px #ff0000, 0 0 120px #880000;
+  display: none; line-height: 1;
+}
+#barWrap {
+  width: 280px; height: 12px;
+  background: rgba(60,0,0,0.8);
+  border: 1px solid #ff2200; border-radius: 6px; overflow: hidden;
+}
+#barFill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, #cc0000, #ff4400, #ff8800);
+  border-radius: 6px; transition: width 0.08s;
+}
+#debugInfo {
+  font-family: monospace; font-size: 13px; color: rgba(255,100,100,0.8);
+  text-shadow: 0 0 8px #ff0000; letter-spacing: 1px;
+}
+#manualBtn {
+  padding: 10px 28px;
+  background: rgba(0,0,0,0.7); border: 1.5px solid #ff2200;
+  color: #ff2200; font-family: 'Arial Black', sans-serif;
+  font-size: 14px; letter-spacing: 3px; cursor: pointer; border-radius: 3px;
+}
+#manualBtn:hover { background: rgba(200,0,0,0.25); }
+#loadingScreen {
+  position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
+  background: #000; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; z-index: 100; gap: 20px;
+}
+#loadingText {
+  font-family: 'Arial Black', sans-serif; font-size: 18px;
+  color: #ff2200; text-shadow: 0 0 20px #ff0000; letter-spacing: 4px;
+}
+#loadBar { width: 300px; height: 6px; background: rgba(80,0,0,0.8); border: 1px solid #ff2200; border-radius: 3px; overflow: hidden; }
+#loadFill { height: 100%; width: 0%; background: linear-gradient(90deg, #ff0000, #ff6600); border-radius: 3px; transition: width 0.4s; }
+</style>
+</head>
+<body>
+
+<div id="loadingScreen">
+  <div id="loadingText">覇王色を準備中...</div>
+  <div id="loadBar"><div id="loadFill"></div></div>
+</div>
+
+<div id="container">
+  <video id="video" playsinline autoplay muted></video>
+  <canvas id="bgCanvas"></canvas>
+  <canvas id="effectCanvas"></canvas>
+  <div id="three-canvas" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:4;"></div>
+  <div id="ui">
+    <div id="statusText">カメラを起動中...</div>
+    <div id="countdown"></div>
+    <div id="barWrap"><div id="barFill"></div></div>
+    <div id="debugInfo">EAR: --</div>
+    <button id="manualBtn" onclick="manualTrigger()">手動で発動</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+
+<script>
+const bgCanvas = document.getElementById('bgCanvas');
+const effCanvas = document.getElementById('effectCanvas');
+const bgCtx = bgCanvas.getContext('2d');
+const effCtx = effCanvas.getContext('2d');
+const video = document.getElementById('video');
+const statusText = document.getElementById('statusText');
+const barFill = document.getElementById('barFill');
+const countdownEl = document.getElementById('countdown');
+const debugInfo = document.getElementById('debugInfo');
+const loadFill = document.getElementById('loadFill');
+const loadingScreen = document.getElementById('loadingScreen');
+
+let W, H;
+function resize() {
+  W = bgCanvas.width = effCanvas.width = window.innerWidth;
+  H = bgCanvas.height = effCanvas.height = window.innerHeight;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ---- Effects ----
+let bolts=[], shockwaves=[];
+let haikiIntensity=0, tick=0;
+let closedFrames=0, triggered=false, cooling=false;
+const REQUIRED_FRAMES = 90;
+
+function lerp(a,b,t){return a+(b-a)*t;}
+function rand(a,b){return a+Math.random()*(b-a);}
+
+// ---- Three.js Ring Particle System ----
+const RING_COUNT = 25000;
+// Each ring gets its OWN BufferGeometry + Points object for max clarity
+let threeScene, threeCamera, threeRenderer;
+let ringObjects = []; // { mesh: THREE.Points, ring: data }
+
+function initThree(){
+  threeScene = new THREE.Scene();
+  threeCamera = new THREE.PerspectiveCamera(70, W/H, 0.1, 8000);
+  threeCamera.position.z = Math.max(W,H) * 1.1;
+
+  threeRenderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  threeRenderer.setSize(W, H);
+  threeRenderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  document.getElementById('three-canvas').appendChild(threeRenderer.domElement);
+
+  window.addEventListener('resize', ()=>{
+    threeCamera.aspect = W/H;
+    threeCamera.updateProjectionMatrix();
+    threeRenderer.setSize(W,H);
+    threeCamera.position.z = Math.max(W,H)*1.1;
+  });
+}
+
+function createRingMesh(ring){
+  const N = RING_COUNT;
+  const positions = new Float32Array(N * 3);
+  const colors    = new Float32Array(N * 3);
+
+  // Build ring shape: particles distributed on torus cross-section
+  for(let j=0; j<N; j++){
+    const angle = (j / N) * Math.PI * 2;
+    // Gaussian-like radial scatter for soft glowing edge
+    const u = Math.random() + Math.random() - 1; // triangular distribution
+    const radialScatter = u * ring.thick;
+    const axial = (Math.random() + Math.random() - 1) * ring.thick * 0.18;
+    const r = ring.r + radialScatter;
+    positions[j*3]   = ring.offsetX + Math.cos(angle) * r;
+    positions[j*3+1] = ring.offsetY + Math.sin(angle) * r;
+    positions[j*3+2] = axial;
+
+    // Color: hot white center → red → dark red edge
+    const t = Math.abs(u); // 0=core, 1=edge
+    colors[j*3]   = 1.0;                          // R always max
+    colors[j*3+1] = Math.max(0, (1-t) * 0.7 * (ring.hue/30)); // G bright at core
+    colors[j*3+2] = 0;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('color',    new THREE.BufferAttribute(colors, 3));
+
+  const mat = new THREE.PointsMaterial({
+    size: ring.ptSize,
+    vertexColors: true,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    depthWrite: false,
+    sizeAttenuation: true,
+    opacity: 1.0
+  });
+
+  return new THREE.Points(geo, mat);
+}
+
+function spawnThreeRings(count){
+  for(let i=0;i<count;i++){
+    const ring = {
+      r:       rand(150, 280),
+      maxR:    rand(Math.max(W,H)*1.2, Math.max(W,H)*2.0),
+      speed:   rand(18, 35),
+      life:    1.0,
+      decay:   rand(0.010, 0.014),
+      thick:   rand(14, 36),
+      ptSize:  rand(2.5, 5.0),
+      offsetX: rand(-25, 25),
+      offsetY: rand(-18, 18),
+      hue:     rand(0, 28),
+      delay:   i * 2
+    };
+    const mesh = createRingMesh(ring);
+    mesh.visible = false;
+    threeScene.add(mesh);
+    ringObjects.push({ mesh, ring });
+  }
+}
+
+function updateThreeRings(){
+  for(let i=ringObjects.length-1; i>=0; i--){
+    const { mesh, ring } = ringObjects[i];
+
+    if(ring.delay > 0){ ring.delay--; continue; }
+    mesh.visible = true;
+
+    // Expand ring: update positions outward
+    ring.r += ring.speed;
+    ring.life -= ring.decay;
+
+    if(ring.life <= 0.01 || ring.r >= ring.maxR){
+      threeScene.remove(mesh);
+      mesh.geometry.dispose();
+      mesh.material.dispose();
+      ringObjects.splice(i,1);
+      continue;
+    }
+
+    // Update each particle position (scale from center)
+    const pos = mesh.geometry.attributes.position.array;
+    const N = RING_COUNT;
+    const scale = ring.r / (ring.r - ring.speed); // expansion ratio this frame
+
+    for(let j=0; j<N; j++){
+      const px = pos[j*3]   - ring.offsetX;
+      const py = pos[j*3+1] - ring.offsetY;
+      // Scale radially
+      pos[j*3]   = ring.offsetX + px * scale;
+      pos[j*3+1] = ring.offsetY + py * scale;
+    }
+    mesh.geometry.attributes.position.needsUpdate = true;
+
+    // Fade out
+    mesh.material.opacity = Math.pow(ring.life, 0.8);
+  }
+
+  threeRenderer.render(threeScene, threeCamera);
+}
+
+// ---- Canvas bolt drawing ----
+function drawBoltSeg(ctx, x1,y1,x2,y2,depth,w){
+  if(depth<=0) return;
+  const jitter=rand(30,80)*(depth/5);
+  const mx=(x1+x2)/2+rand(-jitter,jitter);
+  const my=(y1+y2)/2+rand(-jitter,jitter);
+  ctx.beginPath(); ctx.moveTo(x1,y1); ctx.lineTo(mx,my); ctx.lineTo(x2,y2);
+  ctx.strokeStyle='rgba(255,0,0,0.65)'; ctx.lineWidth=w*2.5; ctx.stroke();
+  ctx.strokeStyle='rgba(0,0,0,1)'; ctx.lineWidth=w; ctx.stroke();
+  if(depth>1){
+    drawBoltSeg(ctx,x1,y1,mx,my,depth-1,w*0.72);
+    drawBoltSeg(ctx,mx,my,x2,y2,depth-1,w*0.72);
+  }
+}
+
+function spawnBolts(count){
+  for(let i=0;i<count;i++){
+    const e=Math.floor(rand(0,4));
+    let x1,y1;
+    if(e===0){x1=rand(0,W);y1=0;}
+    else if(e===1){x1=W;y1=rand(0,H);}
+    else if(e===2){x1=rand(0,W);y1=H;}
+    else{x1=0;y1=rand(0,H);}
+    bolts.push({x1,y1,x2:W/2+rand(-W*0.35,W*0.35),y2:H/2+rand(-H*0.35,H*0.35),
+      life:rand(60,90),maxLife:90,depth:Math.floor(rand(3,5))});
+  }
+}
+
+function spawnShockwave(){ shockwaves.push({r:20,life:1}); }
+
+function triggerHaiki(){
+  if(cooling) return;
+  cooling=true; haikiIntensity=1;
+  spawnThreeRings(25); spawnBolts(10); spawnShockwave();
+  setTimeout(()=>{spawnThreeRings(20);spawnBolts(8);},200);
+  setTimeout(()=>{spawnThreeRings(18);spawnBolts(8);spawnShockwave();},450);
+  setTimeout(()=>{spawnThreeRings(15);spawnBolts(6);spawnShockwave();},750);
+  setTimeout(()=>{spawnThreeRings(12);},1000);
+  setTimeout(()=>{spawnThreeRings(10);},1400);
+  video.style.filter='grayscale(1) brightness(0.7)';
+  statusText.textContent='覇王色の覇気！！';
+  statusText.style.fontSize='38px';
+  statusText.style.color='#ff8800';
+  statusText.style.textShadow='0 0 30px #ff6600, 0 0 80px #ff0000';
+  countdownEl.style.display='none';
+  setTimeout(()=>{
+    statusText.textContent='目を閉じてください...';
+    statusText.style.fontSize='22px';
+    statusText.style.color='#ff2200';
+    statusText.style.textShadow='0 0 20px #ff0000, 0 0 50px #880000';
+    video.style.filter='';
+    cooling=false; triggered=false; closedFrames=0; barFill.style.width='0%';
+  },3500);
+}
+
+function manualTrigger(){ triggerHaiki(); }
+
+function drawBg(){
+  tick++;
+  bgCtx.clearRect(0,0,W,H);
+  if(haikiIntensity>0.01){
+    const grd=bgCtx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*0.85);
+    grd.addColorStop(0,`rgba(100,0,0,${haikiIntensity*0.8})`);
+    grd.addColorStop(0.45,`rgba(30,0,5,${haikiIntensity*0.6})`);
+    grd.addColorStop(1,`rgba(0,0,20,${haikiIntensity*0.4})`);
+    bgCtx.fillStyle=grd; bgCtx.fillRect(0,0,W,H);
+    haikiIntensity=lerp(haikiIntensity,0,0.016);
+  }
+  const pct=Math.min(closedFrames/REQUIRED_FRAMES,1);
+  if(pct>0&&!cooling){
+    bgCtx.fillStyle=`rgba(20,0,0,${pct*0.45})`;
+    bgCtx.fillRect(0,0,W,H);
+  }
+}
+
+function drawEffects(){
+  effCtx.clearRect(0,0,W,H);
+  for(let sw of shockwaves){
+    effCtx.beginPath(); effCtx.arc(W/2,H/2,sw.r,0,Math.PI*2);
+    effCtx.strokeStyle=`rgba(255,20,0,${sw.life*0.75})`;
+    effCtx.lineWidth=sw.life*14;
+    effCtx.stroke();
+    sw.r+=45; sw.life=lerp(sw.life,0,0.06);
+  }
+  shockwaves=shockwaves.filter(s=>s.life>0.015);
+
+  for(let bolt of bolts){
+    const a=bolt.life/bolt.maxLife;
+    effCtx.save(); effCtx.globalAlpha=a;
+    drawBoltSeg(effCtx,bolt.x1,bolt.y1,bolt.x2,bolt.y2,bolt.depth,bolt.depth*2.5);
+    effCtx.restore();
+    bolt.life--;
+  }
+  bolts=bolts.filter(b=>b.life>0);
+}
+
+function loop(){
+  drawBg();
+  drawEffects();
+  updateThreeRings();
+  requestAnimationFrame(loop);
+}
+initThree();
+loop();
+
+// ---- MediaPipe Setup ----
+async function setupCamera(){
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode:'user', width:{ideal:1280}, height:{ideal:720} }
+    });
+    video.srcObject = stream;
+    await video.play();
+    loadFill.style.width = '40%';
+    document.getElementById('loadingText').textContent = 'MediaPipe読込中...';
+  } catch(e){
+    document.getElementById('loadingText').textContent = 'カメラ許可が必要です';
+    statusText.textContent = '手動ボタンで発動！';
+    setTimeout(()=>{ loadingScreen.style.display='none'; }, 2000);
+    return;
+  }
+
+  const faceMesh = new FaceMesh({
+    locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`
+  });
+
+  faceMesh.setOptions({
+    maxNumFaces: 1,
+    refineLandmarks: true,
+    minDetectionConfidence: 0.5,
+    minTrackingConfidence: 0.5
+  });
+
+  faceMesh.onResults(onResults);
+
+  loadFill.style.width = '70%';
+  document.getElementById('loadingText').textContent = 'モデル初期化中...';
+
+  const camera = new Camera(video, {
+    onFrame: async () => {
+      await faceMesh.send({ image: video });
+    },
+    width: 640,
+    height: 480
+  });
+
+  camera.start().then(() => {
+    loadFill.style.width = '100%';
+    document.getElementById('loadingText').textContent = '準備完了！';
+    setTimeout(() => {
+      loadingScreen.style.display = 'none';
+      statusText.textContent = '目を閉じてください...';
+    }, 600);
+  });
+}
+
+function calcEAR(lm, indices){
+  const p = i => lm[i];
+  const d = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
+  const [i0,i1,i2,i3,i4,i5] = indices;
+  return (d(p(i1),p(i5)) + d(p(i2),p(i4))) / (2 * d(p(i0),p(i3)));
+}
+
+function onResults(results){
+  if(cooling) return;
+  if(!results.multiFaceLandmarks || !results.multiFaceLandmarks.length){
+    debugInfo.textContent = 'EAR: 顔未検出';
+    return;
+  }
+
+  const lm = results.multiFaceLandmarks[0];
+
+  // MediaPipe Face Mesh landmark indices for eyes
+  // Left eye:  362,385,387,263,373,380
+  // Right eye: 33,160,158,133,153,144
+  const leftEAR  = calcEAR(lm, [362,385,387,263,373,380]);
+  const rightEAR = calcEAR(lm, [33,160,158,133,153,144]);
+  const ear = (leftEAR + rightEAR) / 2;
+
+  debugInfo.textContent = `EAR: ${ear.toFixed(3)} | L:${leftEAR.toFixed(3)} R:${rightEAR.toFixed(3)}`;
+
+  const isClosed = ear < 0.20;
+
+  if(isClosed){
+    closedFrames++;
+    const pct = Math.min(closedFrames / REQUIRED_FRAMES, 1);
+    barFill.style.width = (pct * 100) + '%';
+    const secsLeft = Math.max(0, Math.ceil((REQUIRED_FRAMES - closedFrames) / 30));
+    if(pct < 1){
+      statusText.textContent = '目を閉じ続けて...';
+      countdownEl.style.display = 'block';
+      countdownEl.textContent = secsLeft;
+      countdownEl.style.color = '#ff4400';
+    } else {
+      countdownEl.textContent = '開けろ！！';
+      countdownEl.style.color = '#ffaa00';
+      statusText.textContent = '今だ！！';
+      triggered = true;
+    }
+  } else {
+    if(triggered){ triggerHaiki(); }
+    if(!cooling){
+      closedFrames = Math.max(0, closedFrames - 2);
+      barFill.style.width = (Math.min(closedFrames/REQUIRED_FRAMES,1)*100) + '%';
+      countdownEl.style.display = 'none';
+      if(!triggered) statusText.textContent = '目を閉じてください...';
+      triggered = false;
+    }
+  }
+}
+
+setupCamera();
+</script>
+</body>
+</html>
