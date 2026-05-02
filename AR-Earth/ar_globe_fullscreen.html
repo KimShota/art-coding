@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>AR Earth Globe</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;background:#000;}
+#appRoot{position:fixed;top:0;left:0;right:0;bottom:0;background:#000;}
+#vid{position:absolute;top:-2px;left:-2px;width:calc(100% + 4px);height:calc(100% + 4px);object-fit:cover;transform:scaleX(-1);}
+#c3d,#handCanvas{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;}
+#gestureLabel{position:absolute;top:16px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.6);border-radius:20px;padding:6px 20px;color:#fff;font-family:sans-serif;font-size:14px;white-space:nowrap;opacity:0;transition:opacity 0.2s;pointer-events:none;}
+#statusDot{position:absolute;top:16px;right:16px;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;}
+#hud{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.45);border-radius:20px;padding:7px 20px;color:rgba(255,255,255,0.65);font-family:sans-serif;font-size:12px;white-space:nowrap;}
+#loadingBar{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#000;z-index:20;font-family:sans-serif;display:none;}
+#progressWrap{width:260px;height:5px;background:rgba(255,255,255,0.15);border-radius:3px;margin-top:16px;overflow:hidden;}
+#progressFill{height:100%;width:0%;background:#3b82f6;border-radius:3px;transition:width 0.3s;}
+#startScreen{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(0,0,0,0.92);z-index:10;font-family:sans-serif;}
+#startScreen button{background:#3b82f6;border:none;color:#fff;padding:14px 40px;border-radius:26px;font-size:16px;cursor:pointer;margin-top:20px;}
+</style>
+</head>
+<body>
+<div id="appRoot">
+  <video id="vid" autoplay playsinline muted></video>
+  <canvas id="c3d"></canvas>
+  <canvas id="handCanvas"></canvas>
+  <div id="gestureLabel"></div>
+  <div id="statusDot"></div>
+  <div id="hud">👆 Flick: spin　｜　🤏 Pinch: zoom　｜　✋ Move: follow</div>
+
+  <div id="loadingBar">
+    <div style="color:#fff;font-size:15px;">Loading NASA textures…</div>
+    <div id="progressWrap"><div id="progressFill"></div></div>
+    <div id="loadingMsg" style="color:rgba(255,255,255,0.4);font-size:12px;margin-top:10px;"></div>
+  </div>
+
+  <div id="startScreen">
+    <div style="font-size:64px;line-height:1;margin-bottom:18px;">🌍</div>
+    <div style="color:#fff;font-size:24px;font-weight:700;margin-bottom:14px;">AR Earth Globe</div>
+    <div style="color:rgba(255,255,255,0.55);font-size:14px;text-align:center;line-height:2.2;padding:0 40px;">
+      👆 Flick finger → spin<br>
+      🤏 Pinch → zoom<br>
+      ✋ Move hand → follow
+    </div>
+    <button onclick="startAR()">Start Camera</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const vid=document.getElementById('vid');
+const c3d=document.getElementById('c3d');
+const handCanvas=document.getElementById('handCanvas');
+const gestureLabel=document.getElementById('gestureLabel');
+const statusDot=document.getElementById('statusDot');
+const progressFill=document.getElementById('progressFill');
+const loadingMsg=document.getElementById('loadingMsg');
+
+let renderer,scene,camera,globe,atmosphere,cloudMesh;
+let hands=[];
+let globeX=0,globeY=0,globeScale=0.9;
+let rotX=0,rotY=0,velRotX=0,velRotY=0;
+let threeReady=false;
+let glabelTimer=null;
+const HIST_LEN=8;
+let indexHistory=[];
+let pinchHistory=[];
+let loadedTex={};
+
+// Use Three.js examples repo textures — proven CORS-friendly
+const TEX={
+  day:     'https://threejs.org/examples/textures/planets/earth_atmos_2048.jpg',
+  normal:  'https://threejs.org/examples/textures/planets/earth_normal_2048.jpg',
+  specular:'https://threejs.org/examples/textures/planets/earth_specular_2048.jpg',
+  clouds:  'https://threejs.org/examples/textures/planets/earth_clouds_1024.png',
+};
+
+async function startAR(){
+  document.getElementById('startScreen').style.display='none';
+  document.getElementById('loadingBar').style.display='flex';
+  await loadTextures();
+  try{
+    const stream=await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:'user',width:{ideal:1920},height:{ideal:1080}},audio:false
+    });
+    vid.srcObject=stream;
+    vid.onloadedmetadata=()=>{
+      vid.play();
+      document.getElementById('loadingBar').style.display='none';
+      setTimeout(()=>{initThree();loadMediaPipe();},100);
+    };
+  }catch(e){
+    alert('Camera error: '+e.message);
+  }
+}
+
+async function loadTextures(){
+  const loader=new THREE.TextureLoader();
+  loader.crossOrigin='anonymous';
+  const keys=Object.keys(TEX);
+  for(let i=0;i<keys.length;i++){
+    const k=keys[i];
+    loadingMsg.textContent=k+'…';
+    progressFill.style.width=Math.round((i/keys.length)*100)+'%';
+    try{
+      loadedTex[k]=await new Promise((res,rej)=>loader.load(TEX[k],t=>{
+        // critical settings for correct colour
+        t.encoding=THREE.sRGBEncoding;
+        t.anisotropy=16;
+        res(t);
+      },undefined,rej));
+    }catch(e){
+      console.warn('Texture failed:',k,e);
+      loadedTex[k]=null;
+    }
+  }
+  progressFill.style.width='100%';
+}
+
+function initThree(){
+  const w=window.innerWidth,h=window.innerHeight;
+  c3d.width=handCanvas.width=w;
+  c3d.height=handCanvas.height=h;
+
+  renderer=new THREE.WebGLRenderer({canvas:c3d,alpha:true,antialias:true});
+  renderer.setSize(w,h);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  renderer.outputEncoding=THREE.sRGBEncoding;
+  renderer.toneMapping=THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure=1.1;
+
+  scene=new THREE.Scene();
+  camera=new THREE.PerspectiveCamera(50,w/h,0.01,500);
+  camera.position.z=2.8;
+
+  // Sun light — warm, directional
+  const sun=new THREE.DirectionalLight(0xfff6e0,2.8);
+  sun.position.set(6,2,4);
+  scene.add(sun);
+  // Very dim ambient so dark side isn't pure black
+  scene.add(new THREE.AmbientLight(0x08101e,1));
+  // Blue earthshine on the dark side
+  const earthshine=new THREE.DirectionalLight(0x1a3a6a,0.15);
+  earthshine.position.set(-5,-1,-4);
+  scene.add(earthshine);
+
+  buildEarth();
+  buildAtmosphere();
+  buildClouds();
+  buildStars();
+
+  threeReady=true;
+  renderLoop();
+  window.addEventListener('resize',onResize);
+}
+
+function onResize(){
+  const w=window.innerWidth,h=window.innerHeight;
+  c3d.width=handCanvas.width=w;
+  c3d.height=handCanvas.height=h;
+  renderer.setSize(w,h);
+  camera.aspect=w/h;
+  camera.updateProjectionMatrix();
+}
+
+function buildEarth(){
+  const geo=new THREE.SphereGeometry(1,256,256);
+  const mat=new THREE.MeshPhongMaterial({
+    map:           loadedTex.day     || null,
+    normalMap:     loadedTex.normal  || null,
+    normalScale:   new THREE.Vector2(6,6),
+    specularMap:   loadedTex.specular|| null,
+    specular:      new THREE.Color(0x2255aa),
+    shininess:     120,
+    // NO emissive — that was causing the white wash
+  });
+  globe=new THREE.Mesh(geo,mat);
+  scene.add(globe);
+}
+
+function buildAtmosphere(){
+  // Outer glow (visible from outside, additive blend)
+  const geo=new THREE.SphereGeometry(1.02,64,64);
+  const mat=new THREE.ShaderMaterial({
+    vertexShader:`
+      varying vec3 vNormal;
+      void main(){
+        vNormal=normalize(normalMatrix*normal);
+        gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.0);
+      }`,
+    fragmentShader:`
+      varying vec3 vNormal;
+      void main(){
+        float rim=1.0-clamp(dot(vNormal,vec3(0,0,1)),0.0,1.0);
+        float strength=pow(rim,3.5);
+        vec3 atmColor=mix(vec3(0.1,0.4,1.0),vec3(0.5,0.8,1.0),rim);
+        gl_FragColor=vec4(atmColor,strength*0.85);
+      }`,
+    side:THREE.FrontSide,
+    blending:THREE.AdditiveBlending,
+    transparent:true,
+    depthWrite:false,
+  });
+  atmosphere=new THREE.Mesh(geo,mat);
+  scene.add(atmosphere);
+}
+
+function buildClouds(){
+  const geo=new THREE.SphereGeometry(1.008,128,128);
+  let mat;
+  if(loadedTex.clouds){
+    // clouds texture: use it as alpha map on white mesh
+    const t=loadedTex.clouds;
+    mat=new THREE.MeshPhongMaterial({
+      map:         t,
+      alphaMap:    t,
+      transparent: true,
+      opacity:     1.0,
+      depthWrite:  false,
+      color:       new THREE.Color(1,1,1),
+      emissive:    new THREE.Color(0,0,0),
+      shininess:   0,
+    });
+  } else {
+    mat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.0});
+  }
+  cloudMesh=new THREE.Mesh(geo,mat);
+  scene.add(cloudMesh);
+}
+
+function buildStars(){
+  const count=10000;
+  const geo=new THREE.BufferGeometry();
+  const pos=new Float32Array(count*3);
+  const col=new Float32Array(count*3);
+  for(let i=0;i<count;i++){
+    const th=Math.random()*Math.PI*2;
+    const ph=Math.acos(2*Math.random()-1);
+    const r=120+Math.random()*30;
+    pos[i*3+0]=r*Math.sin(ph)*Math.cos(th);
+    pos[i*3+1]=r*Math.sin(ph)*Math.sin(th);
+    pos[i*3+2]=r*Math.cos(ph);
+    const t=Math.random();
+    // blue-white stars with a few orange ones
+    if(t<0.05){col[i*3+0]=1;col[i*3+1]=0.7;col[i*3+2]=0.4;}       // orange giant
+    else if(t<0.15){col[i*3+0]=1;col[i*3+1]=1;col[i*3+2]=0.85;}    // yellow-white
+    else{col[i*3+0]=0.85+Math.random()*0.15;col[i*3+1]=0.9+Math.random()*0.1;col[i*3+2]=1;}
+  }
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('color',new THREE.BufferAttribute(col,3));
+  scene.add(new THREE.Points(geo,new THREE.PointsMaterial({
+    size:0.25,vertexColors:true,transparent:true,opacity:0.85,sizeAttenuation:true
+  })));
+}
+
+function renderLoop(){
+  requestAnimationFrame(renderLoop);
+  if(!threeReady)return;
+  processHands();
+
+  const p=new THREE.Vector3(globeX,globeY,0);
+  globe.position.copy(p);
+  atmosphere.position.copy(p);
+  if(cloudMesh)cloudMesh.position.copy(p);
+
+  const s=globeScale;
+  globe.scale.set(s,s,s);
+  atmosphere.scale.set(s,s,s);
+  if(cloudMesh)cloudMesh.scale.set(s,s,s);
+
+  velRotY*=0.96;velRotX*=0.96;
+  rotY+=velRotY;rotX+=velRotX;
+  rotX=Math.max(-Math.PI/2,Math.min(Math.PI/2,rotX));
+
+  globe.rotation.set(rotX,rotY,0);
+  atmosphere.rotation.copy(globe.rotation);
+  if(cloudMesh)cloudMesh.rotation.set(rotX,rotY+Date.now()*0.00003,0.05);
+
+  renderer.render(scene,camera);
+}
+
+/* ── gesture ── */
+function getPinchDist(hand){
+  const t=hand[4],i=hand[8];if(!t||!i)return null;
+  return Math.hypot(t.x-i.x,t.y-i.y);
+}
+
+function processHands(){
+  if(!hands||hands.length===0){
+    indexHistory=[];pinchHistory=[];velRotY*=0.96;velRotX*=0.96;
+    drawHandViz(null,null);return;
+  }
+  const hand=hands[0];
+  const palm=hand[0],tip=hand[8];
+  if(!palm||!tip)return;
+
+  globeX+=((1-palm.x-0.5)*4-globeX)*0.10;
+  globeY+=(-(palm.y-0.5)*3-globeY)*0.10;
+
+  indexHistory.push({x:tip.x,y:tip.y,t:Date.now()});
+  if(indexHistory.length>HIST_LEN)indexHistory.shift();
+
+  const pd=getPinchDist(hand);
+  if(pd!==null){
+    pinchHistory.push(pd);
+    if(pinchHistory.length>8)pinchHistory.shift();
+    if(pinchHistory.length>=2){
+      const d=pinchHistory[pinchHistory.length-1]-pinchHistory[pinchHistory.length-2];
+      if(Math.abs(d)>0.003)globeScale=Math.max(0.15,Math.min(3.5,globeScale*(1+d*10)));
+    }
+    if(pd<0.07)setG('🤏 Pinch — shrink');
+    else if(pd>0.20)setG('✋ Open');
+  }
+
+  if(indexHistory.length>=4){
+    const o=indexHistory[0],c=indexHistory[indexHistory.length-1];
+    const dt=Math.max(c.t-o.t,1);
+    const dx=c.x-o.x,dy=c.y-o.y;
+    const spd=Math.sqrt(dx*dx+dy*dy)/(dt/1000);
+    if(spd>0.6){
+      const pw=Math.min(spd/0.6,6);
+      velRotY+=(-dx)*pw*0.18;velRotX+=dy*pw*0.10;
+      velRotY=Math.max(-0.3,Math.min(0.3,velRotY));
+      velRotX=Math.max(-0.15,Math.min(0.15,velRotX));
+      setG('👆 Flick — spin!');
+    } else if(spd>0.15){
+      velRotY+=(-dx)*0.06;velRotX+=dy*0.04;
+      setG('👆 Drag');
+    }
+  }
+  drawHandViz(hand,pd);
+}
+
+function setG(text){
+  gestureLabel.textContent=text;gestureLabel.style.opacity='1';
+  clearTimeout(glabelTimer);
+  glabelTimer=setTimeout(()=>{gestureLabel.style.opacity='0';},1000);
+}
+
+function drawHandViz(hand,pd){
+  const ctx=handCanvas.getContext('2d');
+  ctx.clearRect(0,0,handCanvas.width,handCanvas.height);
+  if(!hand)return;
+  const w=handCanvas.width,h=handCanvas.height;
+  const conn=[[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+  const iP=pd!==null&&pd<0.07;
+  ctx.strokeStyle=iP?'rgba(100,220,255,0.75)':'rgba(80,200,120,0.65)';ctx.lineWidth=1.8;
+  conn.forEach(([a,b])=>{if(!hand[a]||!hand[b])return;ctx.beginPath();ctx.moveTo((1-hand[a].x)*w,hand[a].y*h);ctx.lineTo((1-hand[b].x)*w,hand[b].y*h);ctx.stroke();});
+  hand.forEach((lm,i)=>{if(!lm)return;ctx.beginPath();ctx.arc((1-lm.x)*w,lm.y*h,i===0?6:i===4||i===8?5:2.5,0,Math.PI*2);ctx.fillStyle=i===8?'rgba(255,80,80,1)':i===4?(iP?'rgba(100,220,255,1)':'rgba(255,200,80,0.9)'):(i===0?'rgba(80,200,120,0.9)':'rgba(80,200,120,0.5)');ctx.fill();});
+  if(hand[4]&&hand[8]){ctx.beginPath();ctx.moveTo((1-hand[4].x)*w,hand[4].y*h);ctx.lineTo((1-hand[8].x)*w,hand[8].y*h);ctx.strokeStyle=iP?'rgba(100,220,255,0.9)':'rgba(255,200,80,0.6)';ctx.lineWidth=2;ctx.stroke();}
+  if(indexHistory.length>1){ctx.beginPath();ctx.strokeStyle='rgba(255,80,80,0.45)';ctx.lineWidth=2;indexHistory.forEach((p,i)=>{const px=(1-p.x)*w,py=p.y*h;i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);});ctx.stroke();}
+}
+
+async function loadMediaPipe(){
+  const s1=document.createElement('script');
+  s1.src='https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js';
+  document.head.appendChild(s1);
+  s1.onload=()=>{
+    const s2=document.createElement('script');
+    s2.src='https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.js';
+    document.head.appendChild(s2);
+    s2.onload=()=>{
+      const det=new Hands({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${f}`});
+      det.setOptions({maxNumHands:1,modelComplexity:1,minDetectionConfidence:0.65,minTrackingConfidence:0.6});
+      det.onResults(r=>{
+        hands=r.multiHandLandmarks&&r.multiHandLandmarks.length>0?r.multiHandLandmarks:[];
+        statusDot.style.background=hands.length?'#22c55e':'#ef4444';
+        statusDot.style.boxShadow=`0 0 8px ${hands.length?'#22c55e':'#ef4444'}`;
+      });
+      new Camera(vid,{onFrame:async()=>await det.send({image:vid}),width:640,height:360}).start();
+    };
+  };
+}
+</script>
+</body>
+</html>
